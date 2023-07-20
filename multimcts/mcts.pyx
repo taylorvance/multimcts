@@ -33,12 +33,6 @@ class GameState():
         """
         raise NotImplementedError("GameState must implement get_reward.")
 
-    def pick_move(self) -> Any:
-        """Returns a legal move from this state, used during the MCTS simulation step.
-        You may override this method with a heuristic for guiding simulations. Otherwise, games are played out randomly.
-        """
-        return choice(self.get_legal_moves())
-
 
 class Node():
     """Represents a game state node in the MCTS search tree.
@@ -84,13 +78,14 @@ class MCTS():
         """
         self.exploration_bias = exploration_bias
 
-    def search(self, state:GameState, *, max_time:Union[int,float]=None, max_iterations:int=None) -> GameState:
+    def search(self, state:GameState, *, max_time:Union[int,float]=None, max_iterations:int=None, heuristic=None) -> GameState:
         """Searches for this state's best move until some limit has been reached.
 
         Args:
             state (GameState): The game state for which to find the best move.
             max_time (int|float): The maximum time to search, in seconds.
             max_iterations (int): The maximum number of selections/simulations to perform.
+            heuristic (callable): A function that takes a state and returns a move. See simulate() for more information.
         Returns:
             GameState: A new game state which is the result of applying the best move to the given state.
         """
@@ -108,7 +103,7 @@ class MCTS():
 
         while True:
             child = self.select(node)
-            reward = self.simulate(child)
+            reward = self.simulate(child, heuristic=heuristic)
             self.backpropagate(child, reward)
 
             if max_time is not None and time() >= end_time:
@@ -151,9 +146,14 @@ class MCTS():
 
         return child
 
-    def simulate(self, node:Node) -> dict:
-        """Step 3: Simulation (aka playout, rollout)
-        Play out a random game, from this node to termination, and return the final reward.
+    def simulate(self, node:Node, *, heuristic=None) -> dict[Union[int,str], float]:
+        """Step 3: Simulation (aka playout/rollout)
+        Play out a game, from the given node to termination, and return the final reward.
+        A heuristic function may be used to guide the simulation. Otherwise, moves are chosen randomly.
+
+        Args:
+            node (Node): The node from which to begin the simulation.
+            heuristic (callable): A function that takes a state and returns a move.
         """
         state = node.state
 
@@ -162,7 +162,10 @@ class MCTS():
         else:
             while not state.is_terminal():
                 terminal_team = state.get_current_team()
-                move = state.pick_move()
+                if heuristic is not None:
+                    move = heuristic(state)
+                else:
+                    move = choice(state.get_legal_moves())
                 state = state.make_move(move)
 
         reward = state.get_reward()

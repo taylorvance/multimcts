@@ -3,7 +3,7 @@ from Cython.Build import cythonize
 
 setup(
     name="multimcts",
-    version="0.2",
+    version="0.2.1",
     author="Taylor Vance",
     author_email="mirrors.cities0w@icloud.com",
     url="https://github.com/taylorvance/multimcts",
