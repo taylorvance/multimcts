@@ -1,8 +1,9 @@
 from time import time
+from random import shuffle, choice
 from collections import defaultdict
-from typing import Union, Iterator, Hashable
+from typing import Union, Any
 
-from libc.math cimport log, sqrt
+from libc.math cimport log, sqrt, INFINITY
 
 
 class GameState():
@@ -10,28 +11,13 @@ class GameState():
         """The identifier of the current player's team."""
         raise NotImplementedError("GameState must implement get_current_team.")
 
-    def get_legal_moves(self, randomize:bool=False) -> Iterator[Hashable]:
-        """An iterator of all legal moves in this state.
-        The randomize param instructs the method to yield moves in a random order.
-        """
+    def get_legal_moves(self) -> list[Any]:
+        """Returns a list of all legal moves from this state."""
         raise NotImplementedError("GameState must implement get_legal_moves.")
 
-    def get_random_move(self) -> Hashable:
-        """Returns a random legal move from this state."""
-        return next(self.get_legal_moves(True))
-
-    def has_move(self) -> bool:
-        """Returns whether there are any legal moves in this state."""
-        try:
-            next(self.get_legal_moves(False))
-            return True
-        except StopIteration:
-            return False
-
-    def make_move(self, move:Hashable) -> 'GameState':
+    def make_move(self, move:Any) -> 'GameState':
         """Returns a new GameState, which is the result of applying the given move to this state.
-        This usually involves updating the board and advancing the player counter.
-        The current state object (self) should not be modified. Rather, modify a copy of it.
+        Note: The current state (self) should NOT be modified. Rather, modify a copy of it.
         """
         raise NotImplementedError("GameState must implement make_move.")
 
@@ -40,18 +26,18 @@ class GameState():
         raise NotImplementedError("GameState must implement is_terminal.")
 
     def get_reward(self) -> Union[float, dict[Union[int,str], float]]:
-        """Returns the reward earned by the team that played the game-ending move.
+        """Returns the reward earned by the team that played the game-ending move (i.e. the team from the previous state).
         Typically 1 for win, -1 for loss, 0 for draw.
-        Alternatively, returns a dict of format {team:reward} or {team1:reward1, team2:reward2, ...}
-        Note: This method is only evaluated on terminal states.
+        Alternatively, returns a dict of teams/rewards: {team1:reward1, team2:reward2, ...}
+        Note: This method is only called on terminal states.
         """
         raise NotImplementedError("GameState must implement get_reward.")
 
-    def __hash__(self) -> int:
-        raise NotImplementedError("GameState must implement __hash__")
-
-    def __eq__(self, other:'GameState') -> bool:
-        raise NotImplementedError("GameStates must implement __eq__")
+    def pick_move(self) -> Any:
+        """Returns a legal move from this state, used during the MCTS simulation step.
+        You may override this method with a heuristic for guiding simulations. Otherwise, games are played out randomly.
+        """
+        return choice(self.get_legal_moves())
 
 
 class Node():
@@ -62,7 +48,7 @@ class Node():
         parent (Node): The parent of the current node in the search tree.
 
     Attributes:
-        children (dict): The children of the current node in the search tree. Keys are moves; values are Nodes.
+        children (list): The child nodes of the current node. These represent legal moves that have been visited.
         num_visits (int): The number of times the node has been visited.
         total_reward (dict): The total reward obtained from simulations through the node. Keys are teams; values are rewards.
         is_terminal (bool): Whether the node represents a terminal state.
@@ -73,64 +59,61 @@ class Node():
         self.state = state
         self.parent = parent
 
-        self.children:dict[Hashable,'Node'] = {}
-        self.num_visits = 0
+        self.children:list['Node'] = []
+        self.num_visits:int = 0
         self.total_reward = defaultdict(float)
 
-        self.is_terminal = self.state.is_terminal()
-        self.is_fully_expanded = self.is_terminal
+        self.is_terminal:bool = self.state.is_terminal()
+        self.is_fully_expanded:bool = self.is_terminal
 
-        self.remaining_moves = [] if self.is_fully_expanded else list(self.state.get_legal_moves(True))
+        if self.is_fully_expanded:
+            self.remaining_moves = []
+        else:
+            self.remaining_moves = self.state.get_legal_moves()
+            shuffle(self.remaining_moves)
 
 
 class MCTS():
-    def __init__(self, *, exploration_bias:float=1.414, heuristic=None, max_time:float=None, max_iterations:int=None):
+    def __init__(self, exploration_bias:float=1.414):
         """Initializes an MCTS agent.
 
         Args:
             exploration_bias (float): The exploration bias, often denoted as C in the UCB formula.
                 It determines the balance between exploration (choosing a move with uncertain outcome) and exploitation (choosing a move with known high reward).
                 Default is 1.414, which is sqrt(2) and often used in practice.
-            heuristic (function): A function that can be used to guide the simulation step.
-                The function should take a GameState object as an argument and return a legal move.
-                If no heuristic is provided, a random legal move is chosen.
-            max_time (float): The maximum time, in seconds, that the search method should run.
-            max_iterations (int): The maximum number of iterations that the search method should execute.
         """
-        if max_time is None and max_iterations is None:
-            raise ValueError("One or more of max_time/max_iterations is required.")
-
         self.exploration_bias = exploration_bias
-        self.heuristic = heuristic
 
-        self.max_time = max_time
-        self.max_iterations = max_iterations
-
-    def search(self, state:GameState) -> GameState:
+    def search(self, state:GameState, *, max_time:Union[int,float]=None, max_iterations:int=None) -> GameState:
         """Searches for this state's best move until some limit has been reached.
 
         Args:
             state (GameState): The game state for which to find the best move.
+            max_time (int|float): The maximum time to search, in seconds.
+            max_iterations (int): The maximum number of selections/simulations to perform.
         Returns:
             GameState: A new game state which is the result of applying the best move to the given state.
         """
+        if max_time is None and max_iterations is None:
+            raise ValueError("One or more of max_time/max_iterations is required.")
+
         node = Node(state)
 
-        cdef float end_time
+        cdef double end_time
         cdef int i
-        if self.max_time is not None:
-            end_time = time() + self.max_time
-        if self.max_iterations is not None:
-            i = self.max_iterations
+        if max_time is not None:
+            end_time = time() + max_time
+        if max_iterations is not None:
+            i = max_iterations
 
         while True:
             child = self.select(node)
             reward = self.simulate(child)
             self.backpropagate(child, reward)
 
-            if self.max_time is not None and time() >= end_time:
+            if max_time is not None and time() >= end_time:
                 break
-            if self.max_iterations is not None:
+            if max_iterations is not None:
                 i -= 1
                 if i <= 0:
                     break
@@ -157,15 +140,16 @@ class MCTS():
         """
         try:
             move = node.remaining_moves.pop()
-            child = Node(node.state.make_move(move), node)
-            node.children[move] = child
-
-            if len(node.remaining_moves) == 0:
-                node.is_fully_expanded = True
-
-            return child
         except IndexError:
-            raise Exception("Tried to expand a fully-expanded or terminal node.")
+            raise IndexError("Tried to expand a node with no remaining moves.")
+
+        child = Node(node.state.make_move(move), node)
+        node.children.append(child)
+
+        if len(node.remaining_moves) == 0:
+            node.is_fully_expanded = True
+
+        return child
 
     def simulate(self, node:Node) -> dict:
         """Step 3: Simulation (aka playout, rollout)
@@ -177,15 +161,8 @@ class MCTS():
             terminal_team = node.parent.state.get_current_team()
         else:
             while not state.is_terminal():
-                try:
-                    if self.heuristic is not None:
-                        move = self.heuristic(state)
-                    else:
-                        move = state.get_random_move()
-                except IndexError:#.forgot why this is an IndexError...
-                    raise Exception("Non-terminal state has no legal moves.")
-
                 terminal_team = state.get_current_team()
+                move = state.pick_move()
                 state = state.make_move(move)
 
         reward = state.get_reward()
@@ -215,14 +192,14 @@ class MCTS():
 
         # Initialize UCB variables.
         cdef int visits
-        cdef float reward, score
-        cdef float exploration_bias = self.exploration_bias
-        cdef float ln_parent_visits = log(node.num_visits)
+        cdef double reward, score
+        cdef double exploration_bias = self.exploration_bias
+        cdef double ln_parent_visits = log(node.num_visits)
 
-        cdef float max_score = float('-inf')
+        cdef double max_score = -INFINITY
         best:Node = None
 
-        for child in node.children.values():
+        for child in node.children:
             # Relative reward is this child's reward minus its siblings' rewards.
             reward = (2 * child.total_reward[cur_team]) - sum(x for x in child.total_reward.values())
             visits = child.num_visits
