@@ -3,10 +3,12 @@ from random import shuffle, choice
 from collections import defaultdict
 from typing import Union, Any
 
+import cython
+
 from libc.math cimport log, sqrt, INFINITY
 
 
-class GameState():
+class GameState:
     def get_current_team(self) -> Union[int,str]:
         """The identifier of the current player's team."""
         raise NotImplementedError("GameState must implement get_current_team.")
@@ -34,7 +36,7 @@ class GameState():
         raise NotImplementedError("GameState must implement get_reward.")
 
 
-class Node():
+class Node:
     """Represents a game state node in the MCTS search tree.
 
     Args:
@@ -67,7 +69,7 @@ class Node():
             shuffle(self.remaining_moves)
 
 
-class MCTS():
+class MCTS:
     def __init__(self, exploration_bias:float=1.414):
         """Initializes an MCTS agent.
 
@@ -190,33 +192,40 @@ class MCTS():
 
             node = node.parent
 
+    @cython.cdivision(True)
     def get_best_child(self, node:Node) -> Node:
-        cur_team = node.state.get_current_team()
-
+        """Find the child with the highest Upper Confidence Bound (UCB) score.
+        ucb = (x / n) + C * sqrt(ln(N) / n)
+        x=reward for this node
+        n=number of simulations for this node
+        N=number of simulations for parent node
+        C=exploration bias
+        """
         # Initialize UCB variables.
         cdef int visits
-        cdef double reward, score
+        cdef double reward, subreward, ucb
         cdef double exploration_bias = self.exploration_bias
         cdef double ln_parent_visits = log(node.num_visits)
 
-        cdef double max_score = -INFINITY
-        best:Node = None
+        cur_team = node.state.get_current_team()
+
+        cdef double best_score = -INFINITY
+        best_child:Node = None
 
         for child in node.children:
-            # Relative reward is this child's reward minus its siblings' rewards.
-            reward = (2 * child.total_reward[cur_team]) - sum(x for x in child.total_reward.values())
             visits = child.num_visits
+            if visits == 0: # This should never happen but we're skipping div by 0 checks so just to be safe...
+                continue
 
-            """UCB := (x / n) + C * sqrt(ln(N) / n)
-            x=reward for this node
-            n=number of simulations for this node
-            N=number of simulations for parent node
-            C=exploration bias
-            """
-            score = (reward / visits) + exploration_bias * sqrt(ln_parent_visits / visits)
+            # Relative reward is this child's reward minus its siblings' rewards.
+            reward = 2 * child.total_reward[cur_team]
+            for subreward in child.total_reward.values():
+                reward -= subreward
 
-            if score > max_score:
-                max_score = score
-                best = child
+            ucb = (reward / visits) + exploration_bias * sqrt(ln_parent_visits / visits)
 
-        return best
+            if ucb > best_score:
+                best_score = ucb
+                best_child = child
+
+        return best_child
