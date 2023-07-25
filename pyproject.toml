@@ -1,3 +1,19 @@
+[tool.poetry]
+name = "multimcts"
+version = "0.2.3"
+description = "Monte Carlo Tree Search for multiple teams"
+authors = ["Taylor Vance <mirrors.cities0w@icloud.com>"]
+license = "MIT"
+readme = "README.md"
+homepage = "https://github.com/taylorvance/multimcts"
+
+[tool.poetry.dependencies]
+python = "^3.9"
+
+[tool.poetry.dev-dependencies]
+cython = "^0.29.21"
+pytest = "^6.0"
+
 [build-system]
-requires = ["setuptools", "wheel", "cython"]
-build-backend = "setuptools.build_meta"
+requires = ["poetry-core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"

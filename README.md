@@ -22,7 +22,7 @@ MultiMCTS is a Python package that implements the [Monte Carlo Tree Search](http
 
 ## Usage
 
-To use MultiMCTS, you must define your game by subclassing `GameState` and implementing the required methods (see [tictactoe.py](https://github.com/taylorvance/multimcts/blob/main/tests/tictactoe.py) for an example):
+To use MultiMCTS, you must define your game by subclassing `GameState` and implementing the required methods (see [examples](https://github.com/taylorvance/multimcts/blob/main/examples/README.md)):
 - get_current_team
 - get_legal_moves
 - make_move
@@ -44,7 +44,3 @@ while not state.is_terminal():              # Continue until the game is over.
 
 print(state)                                # Print the final game state.
 ```
-
-## License
-
-[MIT](https://choosealicense.com/licenses/mit/)
