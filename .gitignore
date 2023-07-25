@@ -1,4 +1,3 @@
-.DS_Store
 build/
 dist/
 *.egg-info/
@@ -6,3 +5,5 @@ dist/
 *.so
 *.html
 *.lock
+.env
+.DS_Store
