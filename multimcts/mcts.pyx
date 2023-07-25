@@ -1,23 +1,28 @@
 from time import time
 from random import shuffle, choice
 from collections import defaultdict
-from typing import Union, Any
+from typing import Union, Dict, List, Any
 
-import cython
+cimport cython
 
 from libc.math cimport log, sqrt, INFINITY
 
 
+Move = Any # MCTS does not care about the contents of a move; it merely passes the output of get_legal_moves() to make_move(), both of which are handled by the user.
+Team = Union[int,str]
+Rewards = Dict[Team,float]
+
+
 class GameState:
-    def get_current_team(self) -> Union[int,str]:
+    def get_current_team(self) -> Team:
         """The identifier of the current player's team."""
         raise NotImplementedError("GameState must implement get_current_team.")
 
-    def get_legal_moves(self) -> list[Any]:
+    def get_legal_moves(self) -> List[Move]:
         """Returns a list of all legal moves from this state."""
         raise NotImplementedError("GameState must implement get_legal_moves.")
 
-    def make_move(self, move:Any) -> 'GameState':
+    def make_move(self, move:Move) -> 'GameState':
         """Returns a new GameState, which is the result of applying the given move to this state.
         Note: The current state (self) should NOT be modified. Rather, modify a copy of it.
         """
@@ -27,7 +32,7 @@ class GameState:
         """Checks if the game is over."""
         raise NotImplementedError("GameState must implement is_terminal.")
 
-    def get_reward(self) -> Union[float, dict[Union[int,str], float]]:
+    def get_reward(self) -> Union[float, Rewards]:
         """Returns the reward earned by the team that played the game-ending move (i.e. the team from the previous state).
         Typically 1 for win, -1 for loss, 0 for draw.
         Alternatively, returns a dict of teams/rewards: {team1:reward1, team2:reward2, ...}
@@ -42,6 +47,7 @@ class Node:
     Args:
         state (GameState): The game state at the current node.
         parent (Node): The parent of the current node in the search tree.
+        move (Move): The move that was played from the parent node to get to this node.
 
     Attributes:
         children (list): The child nodes of the current node. These represent legal moves that have been visited.
@@ -51,11 +57,12 @@ class Node:
         is_fully_expanded (bool): Whether all children of the node have been visited.
         remaining_moves (list): A list of moves that have not yet been tried.
     """
-    def __init__(self, state:GameState, parent:'Node'=None):
+    def __init__(self, state:GameState, parent:'Node'=None, move:Move=None):
         self.state = state
         self.parent = parent
+        self.move = move
 
-        self.children:list['Node'] = []
+        self.children:List['Node'] = []
         self.num_visits:int = 0
         self.total_reward = defaultdict(float)
 
@@ -80,7 +87,7 @@ class MCTS:
         """
         self.exploration_bias = exploration_bias
 
-    def search(self, state:GameState, *, max_time:Union[int,float]=None, max_iterations:int=None, heuristic=None) -> GameState:
+    def search(self, state:GameState, *, max_time:Union[int,float]=None, max_iterations:int=None, heuristic=None, return_type:str="state") -> Union[GameState,Move,Node]:
         """Searches for this state's best move until some limit has been reached.
 
         Args:
@@ -88,9 +95,15 @@ class MCTS:
             max_time (int|float): The maximum time to search, in seconds.
             max_iterations (int): The maximum number of selections/simulations to perform.
             heuristic (callable): A function that takes a state and returns a move. See simulate() for more information.
+            return_type (str): One of "state", "move", or "node".
         Returns:
             GameState: A new game state which is the result of applying the best move to the given state.
         """
+        return_type = return_type.lower()
+        VALID_RETURN_TYPES = {"state","move","node"}
+        if return_type not in VALID_RETURN_TYPES:
+            raise ValueError(f'Invalid return type: {return_type}, must be one of {VALID_RETURN_TYPES}')
+
         if max_time is None and max_iterations is None:
             raise ValueError("One or more of max_time/max_iterations is required.")
 
@@ -115,7 +128,14 @@ class MCTS:
                 if i <= 0:
                     break
 
-        return self.get_best_child(node).state
+        best = self.get_best_child(node)
+
+        if return_type == "state":
+            return best.state
+        elif return_type == "move":
+            return best.move
+        elif return_type == "node":
+            return best
 
     def select(self, node:Node) -> Node:
         """Step 1: Selection
@@ -140,7 +160,7 @@ class MCTS:
         except IndexError:
             raise IndexError("Tried to expand a node with no remaining moves.")
 
-        child = Node(node.state.make_move(move), node)
+        child = Node(state=node.state.make_move(move), parent=node, move=move)
         node.children.append(child)
 
         if len(node.remaining_moves) == 0:
@@ -148,7 +168,7 @@ class MCTS:
 
         return child
 
-    def simulate(self, node:Node, *, heuristic=None) -> dict[Union[int,str], float]:
+    def simulate(self, node:Node, *, heuristic=None) -> Rewards:
         """Step 3: Simulation (aka playout/rollout)
         Play out a game, from the given node to termination, and return the final reward.
         A heuristic function may be used to guide the simulation. Otherwise, moves are chosen randomly.
@@ -177,19 +197,16 @@ class MCTS:
         return reward
 
     @staticmethod
-    def backpropagate(node:Node, reward:dict):
+    def backpropagate(node:Node, reward:Rewards):
         """Step 4: Backpropagation
         Update all ancestors with the reward from this terminal node.
         """
-        # Remove 0-values for efficiency
+        # Remove 0-values for efficiency.
         reward = {k:v for k,v in reward.items() if v!=0}
-
         while node is not None:
             node.num_visits += 1
-
             for key in reward:
                 node.total_reward[key] += reward[key]
-
             node = node.parent
 
     @cython.cdivision(True)
