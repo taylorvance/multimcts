@@ -1,11 +1,16 @@
+# distutils: language=c++
+# cython: language_level=3
+# cython: profile=False
+
 from time import time
 from random import shuffle, choice
-from collections import defaultdict
 from typing import Union, Dict, List, Any
 
-cimport cython
-
 from libc.math cimport log, sqrt, INFINITY
+from libcpp.map cimport map
+from libcpp.string cimport string
+from libcpp.pair cimport pair
+cimport cython
 
 
 Move = Any # MCTS does not care about the contents of a move; it merely passes the output of get_legal_moves() to make_move(), both of which are handled by the user.
@@ -32,7 +37,7 @@ class GameState:
         """Checks if the game is over."""
         raise NotImplementedError("GameState must implement is_terminal.")
 
-    def get_reward(self) -> Union[float, Rewards]:
+    def get_reward(self) -> Union[float,Rewards]:
         """Returns the reward earned by the team that played the game-ending move (i.e. the team from the previous state).
         Typically 1 for win, -1 for loss, 0 for draw.
         Alternatively, returns a dict of teams/rewards: {team1:reward1, team2:reward2, ...}
@@ -41,7 +46,7 @@ class GameState:
         raise NotImplementedError("GameState must implement get_reward.")
 
 
-class Node:
+cdef class Node:
     """Represents a game state node in the MCTS search tree.
 
     Args:
@@ -57,35 +62,71 @@ class Node:
         is_fully_expanded (bool): Whether all children of the node have been visited.
         remaining_moves (list): A list of moves that have not yet been tried.
     """
+    cdef _state, _move
+    cdef string _team
+    cdef Node _parent
+    cdef _children, _remaining_moves
+    cdef map[string,float] _total_reward
+    cdef int _num_visits
+    cdef double log_visits
+    cdef bint _is_terminal
+    cdef bint _is_fully_expanded
+
     def __init__(self, state:GameState, parent:'Node'=None, move:Move=None):
-        self.state = state
-        self.parent = parent
-        self.move = move
+        self._state = state
+        self._parent = parent
+        self._move = move
+        self._team = str(self._state.get_current_team()).encode()
 
-        self.children:List['Node'] = []
-        self.num_visits:int = 0
-        self.total_reward = defaultdict(float)
+        self._children:List['Node'] = []
+        self._num_visits = 0
+        self.log_visits = -INFINITY
+        self._total_reward = map[string,float]()
 
-        self.is_terminal:bool = self.state.is_terminal()
-        self.is_fully_expanded:bool = self.is_terminal
-
-        if self.is_fully_expanded:
-            self.remaining_moves = []
+        self._is_terminal = self._state.is_terminal()
+        if self._is_terminal:
+            self._is_fully_expanded = True
+            self._remaining_moves = []
         else:
-            self.remaining_moves = self.state.get_legal_moves()
-            shuffle(self.remaining_moves)
+            self._is_fully_expanded = False
+            self._remaining_moves = self._state.get_legal_moves()
+            shuffle(self._remaining_moves)#.do a c-shuffle? need memoryview?
+
+    @property
+    def state(self) -> GameState: return self._state
+    @property
+    def parent(self) -> 'Node': return self._parent
+    @property
+    def move(self) -> Move: return self._move
+    @property
+    def children(self) -> List['Node']: return self._children
+    @property
+    def remaining_moves(self) -> List[Move]: return self._remaining_moves
+
+    @cython.cdivision(True)
+    @cython.boundscheck(False)
+    @cython.wraparound(False)
+    def visit(self):
+        self._num_visits += 1
+        self.log_visits = log(self._num_visits)
 
 
-class MCTS:
+cdef class MCTS:
+    cdef double exploration_bias
+
     def __init__(self, exploration_bias:float=1.414):
         """Initializes an MCTS agent.
 
         Args:
             exploration_bias (float): The exploration bias, often denoted as C in the UCB formula.
                 It determines the balance between exploration (choosing a move with uncertain outcome) and exploitation (choosing a move with known high reward).
-                Default is 1.414, which is sqrt(2) and often used in practice.
+                The default √2 is often used in practice. However, the optimal value depends on the game and is usually found by experimentation.
         """
         self.exploration_bias = exploration_bias
+
+    @property
+    def exploration_bias(self) -> float:
+        return self.exploration_bias
 
     def search(self, state:GameState, *, max_time:Union[int,float]=None, max_iterations:int=None, heuristic=None, return_type:str="state") -> Union[GameState,Move,Node]:
         """Searches for this state's best move until some limit has been reached.
@@ -109,6 +150,8 @@ class MCTS:
 
         node = Node(state)
 
+        cdef double exploration_bias = self.exploration_bias
+
         cdef double end_time
         cdef int i
         if max_time is not None:
@@ -117,7 +160,7 @@ class MCTS:
             i = max_iterations
 
         while True:
-            child = self.select(node)
+            child = self.select(node, exploration_bias)
             reward = self.simulate(child, heuristic=heuristic)
             self.backpropagate(child, reward)
 
@@ -128,7 +171,7 @@ class MCTS:
                 if i <= 0:
                     break
 
-        best = self.get_best_child(node)
+        best = self.get_best_child(node, exploration_bias)
 
         if return_type == "state":
             return best.state
@@ -137,16 +180,16 @@ class MCTS:
         elif return_type == "node":
             return best
 
-    def select(self, node:Node) -> Node:
+    def select(self, node:Node, exploration_bias:float) -> Node:
         """Step 1: Selection
         Traverse the tree for the node we most want to simulate.
         Looks for an unexplored child of this node's best child's best child's...best child.
         """
-        while not node.is_terminal:
-            if not node.is_fully_expanded:
+        while not node._is_terminal:
+            if not node._is_fully_expanded:
                 return self.expand(node)
             else:
-                node = self.get_best_child(node)
+                node = self.get_best_child(node, exploration_bias)
 
         return node
 
@@ -164,7 +207,7 @@ class MCTS:
         node.children.append(child)
 
         if len(node.remaining_moves) == 0:
-            node.is_fully_expanded = True
+            node._is_fully_expanded = True
 
         return child
 
@@ -179,7 +222,7 @@ class MCTS:
         """
         state = node.state
 
-        if node.is_terminal:
+        if node._is_terminal:
             terminal_team = node.parent.state.get_current_team()
         else:
             while not state.is_terminal():
@@ -201,16 +244,29 @@ class MCTS:
         """Step 4: Backpropagation
         Update all ancestors with the reward from this terminal node.
         """
-        # Remove 0-values for efficiency.
-        reward = {k:v for k,v in reward.items() if v!=0}
+        cdef double val
+        cdef string ckey
+        cdef map[string,float] creward = map[string,float]()
+        for key,val in reward.items():
+            if val == 0:
+                continue
+            ckey = str(key).encode()
+            creward[ckey] = val
+
+        cdef pair[string,float] item
         while node is not None:
-            node.num_visits += 1
-            for key in reward:
-                node.total_reward[key] += reward[key]
+            for item in creward:
+                ckey = item.first
+                if node._total_reward.count(ckey) == 0:
+                    node._total_reward[ckey] = 0
+                node._total_reward[ckey] += item.second
+            node.visit()
             node = node.parent
 
     @cython.cdivision(True)
-    def get_best_child(self, node:Node) -> Node:
+    @cython.boundscheck(False)
+    @cython.wraparound(False)
+    def get_best_child(self, node:Node, exploration_bias:float) -> Node:
         """Find the child with the highest Upper Confidence Bound (UCB) score.
         ucb = (x / n) + C * sqrt(ln(N) / n)
         x=reward for this node
@@ -220,26 +276,28 @@ class MCTS:
         """
         # Initialize UCB variables.
         cdef int visits
-        cdef double reward, subreward, ucb
-        cdef double exploration_bias = self.exploration_bias
-        cdef double ln_parent_visits = log(node.num_visits)
+        cdef double reward, ucb
+        cdef double C = exploration_bias
+        cdef double ln_parent_visits = node.log_visits
 
-        cur_team = node.state.get_current_team()
+        cdef string cur_team = node._team
+
+        cdef Node child, best_child
+        cdef pair[string,float] item
 
         cdef double best_score = -INFINITY
-        best_child:Node = None
 
         for child in node.children:
-            visits = child.num_visits
+            visits = child._num_visits
             if visits == 0: # This should never happen but we're skipping div by 0 checks so just to be safe...
                 continue
 
             # Relative reward is this child's reward minus its siblings' rewards.
-            reward = 2 * child.total_reward[cur_team]
-            for subreward in child.total_reward.values():
-                reward -= subreward
+            reward = 2 * child._total_reward[cur_team]
+            for item in child._total_reward:
+                reward -= item.second
 
-            ucb = (reward / visits) + exploration_bias * sqrt(ln_parent_visits / visits)
+            ucb = (reward / visits) + C * sqrt(ln_parent_visits / visits)
 
             if ucb > best_score:
                 best_score = ucb
