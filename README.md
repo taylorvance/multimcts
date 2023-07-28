@@ -5,15 +5,15 @@ MultiMCTS is a Python package that implements the [Monte Carlo Tree Search](http
 
 ## Features
 
-- Efficient MCTS implementation
+- Efficient (largely C-compiled) MCTS implementation
 - Support for any number of players/teams
 - Easily create AI for any board game
 
 
-## Game Implementation
+## Usage
 
 ### For your game, you will need to:
-- Represent the game state in code
+- Represent a game state in code
 - Identify all legal moves
 - Determine if the game is over and who won
 
@@ -22,23 +22,19 @@ MultiMCTS is a Python package that implements the [Monte Carlo Tree Search](http
 - Have domain knowledge
 - Evaluate the favorability of a game state
 
-
-## Installation
-
+You can install with pip.
 ```bash
 pip install multimcts
 ```
 
-
-## Usage
-
-To use MultiMCTS, you must define your game by subclassing `GameState` and implementing the required methods (see [examples](https://github.com/taylorvance/multimcts/blob/main/examples/README.md)):
+To use MultiMCTS, you must first define your game by subclassing `GameState` and implementing the required methods (see the [Tic-Tac-Toe](https://github.com/taylorvance/multimcts/blob/main/examples/tictactoe.py) example):
 - `get_current_team` -- Returns the current team.
 - `get_legal_moves` -- Returns a list of legal moves. Moves can be any data structure.
 - `make_move` -- Returns a copy of the current state after performing the given move (one from get_legal_moves).
 - `is_terminal` -- Returns whether the game is over.
 - `get_reward` -- Returns the reward given to the team that played the game-ending move.
 
+Then you can use MCTS to search for the best move. It will search until your defined limit is reached. The following shows how to simulate a game using MCTS:
 ```python
 from multimcts import MCTS, GameState
 
