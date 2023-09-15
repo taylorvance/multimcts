@@ -113,7 +113,7 @@ cdef class Node:
 
     @cython.cdivision(True)
     cdef void visit(self, map[string,double] crewards, set moves):
-        """Update this node's visits and rewards, and cache some variables for more efficient UCB calculation."""
+        """Update this node's visits and rewards, and cache some variables for more efficient score calculation."""
         self.visits += 1
 
         self.sqrtlog_visits = sqrtlog(self.visits)
@@ -132,6 +132,7 @@ cdef class Node:
             self.avg_reward = ((2*self.rewards[self.parent.team]) - total_reward) / self.visits
 
         # Update RAVE rewards.
+        #.only if rave bias is not 0?
         if len(moves) == 0:
             return
         cdef int rave_visits = 0
@@ -149,54 +150,63 @@ cdef class Node:
             if self.parent is not None:
                 self.avg_rave_reward = ((2*self.rave_rewards[self.parent.team]) - total_rave_reward) / self.rave_visits
 
-    cpdef double ucb(self, double exploration_bias):
-        """Upper Confidence Bound
-        ucb = (x / n) + C * sqrt(ln(N) / n)
-        x=reward for this node
-        n=number of simulations for this node
-        N=number of simulations for parent node
-        C=exploration bias
-        """
-        return self.avg_reward + self.uncertainty(exploration_bias)
-
     cpdef double uncertainty(self, double exploration_bias):
+        """The exploration term of the UCT formula: C * sqrt(ln(N) / n)
+        Used to establish the upper and lower confidence bounds around the base score.
+        """
         return exploration_bias * self.parent.sqrtlog_visits * self.invsqrt_visits
 
     @cython.cdivision(True)
-    cpdef double rave_ratio(self, double bias):
+    cpdef double rave_ratio(self, double rave_bias):
         """Determines the relative weight of RAVE rewards in the final score calculation.
-        As this node is visited more times, the RAVE effect diminishes.
-        Note: The number of RAVE visits has little bearing on this value (the function's curve looks the same for all large values of rave_visits).
-        https://www.desmos.com/calculator/drlccftt6a
+        The RAVE effect diminishes with more visits.
         """
-        if self.rave_visits == 0 or bias == 0:
+        if self.rave_visits == 0 or rave_bias == 0:
             return 0
         elif self.visits == 0:
             return 1
-        cdef int v = self.visits, rv = self.rave_visits
-        return rv / (v + rv + 4*v*rv/(bias*bias))
+        return rave_bias / (rave_bias + self.visits)
+
+    cpdef double base_score(self, double rave_bias):
+        if rave_bias == 0: return self.avg_reward
+        cdef double rave_ratio = self.rave_ratio(rave_bias)
+        return ((1-rave_ratio) * self.avg_reward) + (rave_ratio * self.avg_rave_reward)
 
     cpdef double score(self, double exploration_bias, double rave_bias):
-        cdef double rave_ratio = self.rave_ratio(rave_bias)
-        return (rave_ratio * self.avg_rave_reward) + ((1-rave_ratio) * self.avg_reward) + self.uncertainty(exploration_bias)
+        return self.base_score(rave_bias) + self.uncertainty(exploration_bias)
 
     @cython.wraparound(False)
     @cython.boundscheck(False)
-    cdef Node best_child(self, double exploration_bias, double rave_bias):
+    cdef Node best_child(self, double exploration_bias, double rave_bias, double pruning_bias):
         cdef Node child, best_child = next(iter(self.children.values()))
         cdef double score, best_score = -INFINITY
+
+        # Find the best child.
+        lessers = []
         for move, child in self.children.items():
             score = child.score(exploration_bias, rave_bias)
+            lessers.append((child, move, score))
             if score > best_score:
                 best_score = score
                 best_child = child
+
+        # Prune any child whose optimistic estimate (UCB) is much* worse than the best child's pessimistic estimate (LCB).
+        # * "much" tuned by pruning_bias and buffered by uncertainty
+        cdef double best_lcb, pruning_threshold
+        if pruning_bias > 0:
+            best_lcb = best_child.base_score(rave_bias) - best_child.uncertainty(exploration_bias)
+            for (child, move, score) in lessers:
+                pruning_threshold = best_lcb - child.uncertainty(exploration_bias) * (1-pruning_bias)
+                if score <= pruning_threshold:
+                    del self.children[move]
+
         return best_child
 
-    cdef Node select(self, double exploration_bias, double rave_bias):
+    cdef Node select(self, double exploration_bias, double rave_bias, double pruning_bias):
         cdef Node node = self
         while not node.is_terminal:
             if node.is_fully_expanded:
-                node = node.best_child(exploration_bias, rave_bias)
+                node = node.best_child(exploration_bias, rave_bias, pruning_bias)
             else:
                 return node.expand()
         return node
@@ -245,9 +255,9 @@ cdef class Node:
         if self.parent is not None:
             self.parent.backpropagate(crewards, moves)
 
-    cdef void execute_round(self, double exploration_bias, double rave_bias):
+    cdef void execute_round(self, double exploration_bias, double rave_bias, double pruning_bias):
         """Step 1,2: Selection,Expansion"""
-        cdef Node node = self.select(exploration_bias, rave_bias)
+        cdef Node node = self.select(exploration_bias, rave_bias, pruning_bias)
 
         """Step 3: Simulation"""
         cdef map[string,double] crewards
@@ -261,22 +271,29 @@ cdef class Node:
 
 
 cdef class MCTS:
-    cdef double _exploration_bias, _rave_bias
+    cdef double _exploration_bias, _rave_bias, _pruning_bias
 
-    def __init__(self, exploration_bias:float=1.414, rave_bias:float=0):
+    def __init__(self, exploration_bias:float=1.414, rave_bias:float=0, pruning_bias:float=0):
         """Initializes an MCTS agent.
         Args:
-            exploration_bias (float): The exploration bias, which balances exploration (favoring untested moves) and exploitation (favoring good moves).
-                The default √2 is often used in practice. However, the optimal value depends on the game and is usually found by experimentation.
-            rave_bias (float): The RAVE bias, which balances RAVE rewards (from unchosen but simulated moves) with regular rewards (from chosen moves).
+            exploration_bias (float): Balances exploration (favoring untested moves) and exploitation (favoring good moves).
+            rave_bias (float): Balances RAVE rewards (from unchosen but simulated moves) with regular rewards (from chosen moves).
+            pruning_bias (float): Determines the aggressiveness of pruning.
         """
+        if exploration_bias < 0: raise ValueError('Invalid exploration_bias. Must be non-negative.')
+        if rave_bias < 0: raise ValueError('Invalid rave_bias. Must be non-negative.')
+        if pruning_bias < 0 or pruning_bias > 1: raise ValueError('Invalid pruning_bias. Must be in range [0,1].')
+
         self._exploration_bias = exploration_bias
         self._rave_bias = rave_bias
+        self._pruning_bias = pruning_bias
 
     @property
     def exploration_bias(self) -> float: return self._exploration_bias
     @property
     def rave_bias(self) -> float: return self._rave_bias
+    @property
+    def pruning_bias(self) -> float: return self._pruning_bias
 
     def search(self, state:GameState, *, max_iterations:int=None, max_time:Union[int,float]=None, return_type:str="state") -> Union[GameState,Move,Node]:
         """Searches for this state's best move until some limit has been reached.
@@ -304,7 +321,7 @@ cdef class MCTS:
         cdef Node node = Node(state)
         cdef int i = 0
         while True:
-            node.execute_round(self._exploration_bias, self._rave_bias)
+            node.execute_round(self._exploration_bias, self._rave_bias, self._pruning_bias)
 
             # Check stopping conditions.
             i += 1
@@ -317,7 +334,7 @@ cdef class MCTS:
 
         # We've performed the full search above using the desired biases.
         # For the final pick we will be a bit more exploitative and a bit less RAVEy.
-        cdef Node best = node.best_child(self._exploration_bias*0.9, self._rave_bias*0.9)
+        cdef Node best = node.best_child(self._exploration_bias*0.9, self._rave_bias*0.9, 0)
 
         if return_type == "state":
             return best.state
