@@ -202,73 +202,6 @@ cdef class Node:
 
         return best_child
 
-    cdef Node select(self, double exploration_bias, double rave_bias, double pruning_bias):
-        cdef Node node = self
-        while not node.is_terminal:
-            if node.is_fully_expanded:
-                node = node.best_child(exploration_bias, rave_bias, pruning_bias)
-            else:
-                return node.expand()
-        return node
-
-    cdef Node expand(self):
-        move = self.remaining_moves.pop()
-        if len(self.remaining_moves) == 0:
-            self.is_fully_expanded = True
-        cdef Node child = Node(state=self.state.make_move(move), parent=self, move=move)
-        self.children[move] = child
-        return child
-
-    cdef Tuple[map[string,double], set] simulate(self):
-        cdef set moves = set()
-        state = self.state
-
-        if self.is_terminal:
-            # If terminal, no simulation needed. Just get the reward.
-            reward = state.get_reward()
-            if not isinstance(reward, dict):
-                reward = {self.parent.state.get_current_team(): reward}
-        elif callable(getattr(state, 'simulate', False)):
-            # Else if this GameState has its own simulate method (aka rollout policy), use it.
-            (reward, moves) = state.simulate()
-        else:
-            # Else, use a random rollout policy.
-            while not state.is_terminal():
-                prev_state = state
-                move = choice(state.get_legal_moves())
-                moves.add(move)
-                state = state.make_move(move)
-            reward = state.get_reward()
-            if not isinstance(reward, dict):
-                reward = {prev_state.get_current_team(): reward}
-
-        # Convert rewards from Python dict to C map.
-        cdef map[string,double] crewards = map[string,double]()
-        for team in reward:
-            if reward[team] != 0:
-                crewards[str(team).encode()] = float(reward[team])
-
-        return (crewards, moves)
-
-    cdef void backpropagate(self, map[string,double] crewards, set moves):
-        self.visit(crewards, moves)
-        if self.parent is not None:
-            self.parent.backpropagate(crewards, moves)
-
-    cdef void execute_round(self, double exploration_bias, double rave_bias, double pruning_bias):
-        """Step 1,2: Selection,Expansion"""
-        cdef Node node = self.select(exploration_bias, rave_bias, pruning_bias)
-
-        """Step 3: Simulation"""
-        cdef map[string,double] crewards
-        cdef set moves
-        (crewards, moves) = node.simulate()
-
-        """Step 4: Backpropagation"""
-        if rave_bias == 0:
-            moves = set()
-        node.backpropagate(crewards, moves)
-
 
 cdef class MCTS:
     cdef double _exploration_bias, _rave_bias, _pruning_bias
@@ -321,7 +254,7 @@ cdef class MCTS:
         cdef Node node = Node(state)
         cdef int i = 0
         while True:
-            node.execute_round(self._exploration_bias, self._rave_bias, self._pruning_bias)
+            self.execute_round(node)
 
             # Check stopping conditions.
             i += 1
@@ -342,6 +275,75 @@ cdef class MCTS:
             return best.move
         elif return_type == "node":
             return best
+
+    cdef void execute_round(self, Node node):
+        """Step 1-2: Selection/Expansion"""
+        node = self.select(node)
+
+        """Step 3: Simulation"""
+        cdef map[string,double] crewards
+        cdef set moves
+        (crewards, moves) = MCTS.simulate(node)
+
+        """Step 4: Backpropagation"""
+        if self._rave_bias == 0:
+            moves = set()
+        MCTS.backpropagate(node, crewards, moves)
+
+    cdef Node select(self, Node node):
+        while not node.is_terminal:
+            if node.is_fully_expanded:
+                node = node.best_child(self._exploration_bias, self._rave_bias, self._pruning_bias)
+            else:
+                return MCTS.expand(node)
+        return node
+
+    @staticmethod
+    cdef Node expand(Node node):
+        move = node.remaining_moves.pop()
+        if len(node.remaining_moves) == 0:
+            node.is_fully_expanded = True
+        cdef Node child = Node(state=node.state.make_move(move), parent=node, move=move)
+        node.children[move] = child
+        return child
+
+    @staticmethod
+    cdef Tuple[map[string,double], set] simulate(Node node):
+        cdef set moves = set()
+        state = node.state
+
+        if node.is_terminal:
+            # If terminal, no simulation needed. Just get the reward.
+            reward = state.get_reward()
+            if not isinstance(reward, dict):
+                reward = {node.parent.state.get_current_team(): reward}
+        elif callable(getattr(state, 'simulate', False)):
+            # Else if this GameState has its own simulate method (aka rollout policy), use it.
+            (reward, moves) = state.simulate()
+        else:
+            # Else, use a random rollout policy.
+            while not state.is_terminal():
+                prev_state = state
+                move = choice(state.get_legal_moves())
+                moves.add(move)
+                state = state.make_move(move)
+            reward = state.get_reward()
+            if not isinstance(reward, dict):
+                reward = {prev_state.get_current_team(): reward}
+
+        # Convert rewards from Python dict to C map.
+        cdef map[string,double] crewards = map[string,double]()
+        for team in reward:
+            if reward[team] != 0:
+                crewards[str(team).encode()] = float(reward[team])
+
+        return (crewards, moves)
+
+    @staticmethod
+    cdef void backpropagate(Node node, map[string,double] crewards, set moves):
+        node.visit(crewards, moves)
+        if node.parent is not None:
+            MCTS.backpropagate(node.parent, crewards, moves)
 
 
 # Cache some math to speed up Node visits.
