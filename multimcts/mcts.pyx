@@ -190,13 +190,14 @@ cdef class Node:
                 best_score = score
                 best_child = child
 
-        # Prune any child whose optimistic estimate (UCB) is much* worse than the best child's pessimistic estimate (LCB).
-        # * "much" tuned by pruning_bias and buffered by uncertainty
+        # Prune any child whose optimistic estimate (UCB) is much worse than the best child's pessimistic estimate (LCB).
+        # The highest pruning threshold (for pruning_bias=1) is equal to best child's LCB.
+        # The lowest pruning threshold (for pruning_bias~=0) is equivalent to best child's LCB minus the lesser child's uncertainty.
         cdef double best_lcb, pruning_threshold
         if pruning_bias > 0:
-            best_lcb = best_child.base_score(rave_bias) - best_child.uncertainty(exploration_bias)
+            best_lcb = best_score - (2 * best_child.uncertainty(exploration_bias))
             for (child, move, score) in lessers:
-                pruning_threshold = best_lcb - child.uncertainty(exploration_bias) * (1-pruning_bias)
+                pruning_threshold = best_lcb - (child.uncertainty(exploration_bias) * (1-pruning_bias))
                 if score <= pruning_threshold:
                     del self.children[move]
 
