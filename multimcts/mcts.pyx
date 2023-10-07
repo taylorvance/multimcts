@@ -64,7 +64,7 @@ cdef class Node:
     cdef Node parent
     cdef string team
     cdef map[string,double] rewards, rave_rewards
-    cdef int visits, rave_visits
+    cdef unsigned int visits, rave_visits
     cdef bint is_terminal, is_fully_expanded
     cdef double sqrtlog_visits, invsqrt_visits, avg_reward, avg_rave_reward
 
@@ -135,7 +135,7 @@ cdef class Node:
         #.only if rave bias is not 0?
         if len(moves) == 0:
             return
-        cdef int rave_visits = 0
+        cdef unsigned int rave_visits = 0
         cdef double total_rave_reward = 0
         for move in list(self.children.keys()) + self.remaining_moves:
             if move in moves:
@@ -178,8 +178,10 @@ cdef class Node:
     @cython.wraparound(False)
     @cython.boundscheck(False)
     cdef Node best_child(self, double exploration_bias, double rave_bias, double pruning_bias):
-        cdef Node child, best_child = next(iter(self.children.values()))
-        cdef double score, best_score = -INFINITY
+        cdef Node child
+        cdef Node best_child = next(iter(self.children.values())) # Arbitrarily start with the first child to avoid compilation errors.
+        cdef double score
+        cdef double best_score = -INFINITY
 
         # Find the best child.
         lessers = []
@@ -244,8 +246,8 @@ cdef class MCTS:
         if return_type not in {'state','move','node'}:
             raise ValueError(f'Invalid return_type "{return_type}" must be one of {{"state","move","node"}}')
 
-        # Initialize stopping conditions.
-        cdef int end_iteration
+        # Set stopping conditions.
+        cdef unsigned int end_iteration
         if max_iterations is not None:
             end_iteration = max_iterations
         cdef double end_time
@@ -253,7 +255,7 @@ cdef class MCTS:
             end_time = time() + max_time
 
         cdef Node node = Node(state)
-        cdef int i = 0
+        cdef unsigned int i = 0
         while True:
             self.execute_round(node)
 
@@ -266,9 +268,11 @@ cdef class MCTS:
                 if end_time <= time():
                     break
 
-        # We've performed the full search above using the desired biases.
-        # For the final pick we will be a bit more exploitative and a bit less RAVEy.
-        cdef Node best = node.best_child(self._exploration_bias*0.9, self._rave_bias*0.9, 0)
+        # Find the child with the highest average reward.
+        # cdef Node best = max(node.children.values(), key=lambda x: x.avg_reward)
+        # Find the child with the most visits.
+        # cdef Node best = max(node.children.values(), key=lambda x: x.visits)
+        cdef Node best = node.best_child(0, 0, 0)
 
         if return_type == "state":
             return best.state
@@ -350,17 +354,17 @@ cdef class MCTS:
 # Cache some math to speed up Node visits.
 @cython.boundscheck(False)
 @cython.wraparound(False)
-cdef double sqrtlog(int x):
+cdef double sqrtlog(unsigned int x):
     return SQRTLOG[x] if 0 <= x < CACHE_MAX else sqrt(log(x))
 @cython.boundscheck(False)
 @cython.wraparound(False)
 @cython.cdivision(True)
-cdef double invsqrt(int x):
+cdef double invsqrt(unsigned int x):
     return INVSQRT[x] if 0 <= x < CACHE_MAX else 1 / sqrt(x)
 
-cdef int CACHE_MAX = 10000
+cdef unsigned int CACHE_MAX = 10000
 cdef double[10000] SQRTLOG, INVSQRT
-cdef int x = 0
+cdef unsigned int x = 0
 with cython.cdivision(True), cython.boundscheck(False), cython.wraparound(False):
     SQRTLOG[0] = 0
     INVSQRT[0] = 0
