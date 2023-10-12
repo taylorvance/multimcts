@@ -45,6 +45,13 @@ class GameState:
         """
         raise NotImplementedError("GameState must implement get_reward.")
 
+    def suggest_move(self) -> Tuple[Move,GameState]:
+        """Optionally implement this method to serve as a rollout/playout policy.
+        If not implemented, MCTS will choose a random legal move (random rollouts).
+        Note: This method is only called on non-terminal states.
+        """
+        pass
+
 
 cdef class Node:
     """Represents a game state node in the MCTS search tree.
@@ -322,16 +329,22 @@ cdef class MCTS:
             reward = state.get_reward()
             if not isinstance(reward, dict):
                 reward = {node.parent.state.get_current_team(): reward}
-        elif callable(getattr(state, 'simulate', False)):
-            # Else if this GameState has its own simulate method (aka rollout policy), use it.
-            (reward, moves) = state.simulate()
         else:
-            # Else, use a random rollout policy.
-            while not state.is_terminal():
-                prev_state = state
-                move = choice(state.get_legal_moves())
-                moves.add(move)
-                state = state.make_move(move)
+            # Do the rollout.
+            if callable(getattr(state, 'suggest_move', False)):
+                # If the GameState has its own rollout/playout policy, use it.
+                while not state.is_terminal():
+                    prev_state = state
+                    (move, state) = state.suggest_move()
+                    moves.add(move)
+            else:
+                # Else, use the random rollout policy.
+                while not state.is_terminal():
+                    prev_state = state
+                    move = choice(state.get_legal_moves())
+                    moves.add(move)
+                    state = state.make_move(move)
+            # Prep the reward dict.
             reward = state.get_reward()
             if not isinstance(reward, dict):
                 reward = {prev_state.get_current_team(): reward}

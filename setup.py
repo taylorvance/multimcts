@@ -3,7 +3,7 @@ from Cython.Build import cythonize
 
 setup(
     name='multimcts',
-    version='0.6.3',
+    version='0.6.4',
     description='Monte Carlo Tree Search for multiple teams',
     author='Taylor Vance',
     author_email='mirrors.cities0w@icloud.com',
